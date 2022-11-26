@@ -42,7 +42,7 @@ void print_uid(struct stat file_stats){
 }
 
 void print_dimension(struct stat file_stats){
-    printf("Dimension: %ld Bytes\n", file_stats.st_size);
+    printf("Dimension: %lld Bytes\n", file_stats.st_size);
 }
 
 void print_access_for_identity(enum AccessIdentity identity, struct stat file_stats){
@@ -82,7 +82,7 @@ void print_accesses(struct stat file_stats){
 }
 
 void print_links_number(struct stat file_stats){ 
-    printf("Number of links: %ld\n", file_stats.st_nlink);
+    printf("Number of links: %hu\n", file_stats.st_nlink);
 }
 
 void get_file_path_without_extension(char *file_path, char *file_path_without_extension){
@@ -91,7 +91,19 @@ void get_file_path_without_extension(char *file_path, char *file_path_without_ex
     file_path_without_extension[index_of_extension_start] = '\0';
 }
 
-void compile_file(char *file_path){
+enum{
+    read_end=0,
+    write_end=1
+};
+
+void compile_file(char *file_path, int send_output){
+    int pipe_file_descriptors[2];
+
+    if((process_pipe = pipe(pipe_file_descriptors) < 0)){
+        perror("Error creating pipe\n");
+        exit(1);
+    }
+
     int pid = fork();
     
     if (pid == -1){
@@ -102,12 +114,16 @@ void compile_file(char *file_path){
     }
 
     if (pid == 0){
+        close(pipe_file_descriptors[read_end]);
+
         char file_executable[255] = ""; 
         get_file_path_without_extension(file_path, file_executable);
         strcat(file_executable, "_executable");
-
+        dup2(pipe_file_descriptors[write_end], 2);
         printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'. \n", getpid(), file_path, file_executable);
+
         execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
+
         exit(-1);
     }
     else{
@@ -115,8 +131,52 @@ void compile_file(char *file_path){
         int waited_pid = waitpid(pid, &state, WUNTRACED);
         if(WIFEXITED(state)){
             printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n", getpid(), waited_pid, file_path, WEXITSTATUS(state));
+            if(send_output){
+                close(pipe_file_descriptors[write_end]);
+                if ((pid_2 = fork() < 0)){
+                    perror("fork filter")
+                    exit(-1)
+                };
+                if (pid_2 == 0) {
+                    printf("INFO(PID %d): Din copil lansam un proces de grep cu filtre error|warning\n", getpid())
+                    execl("grep", "grep", "error|warning");
+                    perror("execl grep")
+                    exit(-1);
+                }
+                else{
+                    char buffer[256];
+                    int warnings = 0, errors = 0
+                    while(read(process_pipe, buffer, 256)){
+                        if (strstr(buffer, "error")){
+                            errors++;
+                        }
+                        else if (strstr(buffer, "warning")){
+                            warnings++;
+                        }
+                    }
+                    int nota = 0;
+                    if (errors) {
+                        nota = 1;
+                    }
+                    else if (warnings >= 10){
+                        nota = 2;
+                    }
+                    else {
+                        nota = 2 + 8 * (10 - warnings) / 10;
+                    }
+
+                }
+            }
         }
     }
+}
+
+int option_exists(char *input, char desired_option){
+    for(int i = 1; i <= strlen(input); i++){
+        if (input[i] == desired_option)
+            return 1;
+    }
+    return 0;
 }
 
 void do_parse_options(char *file_name, char *input, struct stat file_stats, char *file_path){
@@ -144,7 +204,7 @@ void do_parse_options(char *file_name, char *input, struct stat file_stats, char
                 print_links_number(file_stats);
                 break;
             case 'g':
-                compile_file(file_path);
+                compile_file(file_path, option_exists(input, 'p'));
                 break;
         }
     }
