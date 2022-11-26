@@ -96,13 +96,14 @@ enum{
     write_end=1
 };
 
-void compile_file(char *file_path, int send_output){
-    int pipe_file_descriptors[2];
+void compile_file(char *file_path, int calculate_quality_grade){
+    // int pipe_file_descriptors[2];
+    // int process_pipe;
 
-    if((process_pipe = pipe(pipe_file_descriptors) < 0)){
-        perror("Error creating pipe\n");
-        exit(1);
-    }
+    // if((process_pipe = pipe(pipe_file_descriptors) < 0)){
+    //     perror("Error creating pipe\n");
+    //     exit(1);
+    // }
 
     int pid = fork();
     
@@ -114,12 +115,12 @@ void compile_file(char *file_path, int send_output){
     }
 
     if (pid == 0){
-        close(pipe_file_descriptors[read_end]);
+        // close(pipe_file_descriptors[read_end]);
 
         char file_executable[255] = ""; 
         get_file_path_without_extension(file_path, file_executable);
         strcat(file_executable, "_executable");
-        dup2(pipe_file_descriptors[write_end], 2);
+        // dup2(pipe_file_descriptors[write_end], 2);
         printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'. \n", getpid(), file_path, file_executable);
 
         execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
@@ -131,43 +132,44 @@ void compile_file(char *file_path, int send_output){
         int waited_pid = waitpid(pid, &state, WUNTRACED);
         if(WIFEXITED(state)){
             printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n", getpid(), waited_pid, file_path, WEXITSTATUS(state));
-            if(send_output){
-                close(pipe_file_descriptors[write_end]);
-                if ((pid_2 = fork() < 0)){
-                    perror("fork filter")
-                    exit(-1)
-                };
-                if (pid_2 == 0) {
-                    printf("INFO(PID %d): Din copil lansam un proces de grep cu filtre error|warning\n", getpid())
-                    execl("grep", "grep", "error|warning");
-                    perror("execl grep")
-                    exit(-1);
-                }
-                else{
-                    char buffer[256];
-                    int warnings = 0, errors = 0
-                    while(read(process_pipe, buffer, 256)){
-                        if (strstr(buffer, "error")){
-                            errors++;
-                        }
-                        else if (strstr(buffer, "warning")){
-                            warnings++;
-                        }
-                    }
-                    int nota = 0;
-                    if (errors) {
-                        nota = 1;
-                    }
-                    else if (warnings >= 10){
-                        nota = 2;
-                    }
-                    else {
-                        nota = 2 + 8 * (10 - warnings) / 10;
-                    }
+            // if(calculate_quality_grade){
+            //     close(pipe_file_descriptors[write_end]);
+            //     int pid_2;
+            //     if ((pid_2 = fork() < 0)){
+            //         perror("fork filter");
+            //         exit(-1);
+            //     };
+            //     if (pid_2 == 0) {
+            //         printf("INFO(PID %d): Din copil lansam un proces de grep cu filtre error|warning\n", getpid());
+            //         execl("grep", "grep", "error|warning");
+            //         perror("execl grep");
+            //         exit(-1);
+            //     }
+            //     else{
+            //         char buffer[256];
+            //         int warnings = 0, errors = 0;
+            //         while(read(process_pipe, buffer, 256)){
+            //             if (strstr(buffer, "error")){
+            //                 errors++;
+            //             }
+            //             else if (strstr(buffer, "warning")){
+            //                 warnings++;
+            //             }
+            //         }
+            //         int nota = 0;
+            //         if (errors) {
+            //             nota = 1;
+            //         }
+            //         else if (warnings >= 10){
+            //             nota = 2;
+            //         }
+            //         else {
+            //             nota = 2 + 8 * (10 - warnings) / 10;
+            //         }
 
-                }
+            //     }
+            // }
             }
-        }
     }
 }
 
@@ -203,14 +205,16 @@ void do_parse_options(char *file_name, char *input, struct stat file_stats, char
             case 'c':
                 print_links_number(file_stats);
                 break;
-            case 'g':
-                compile_file(file_path, option_exists(input, 'p'));
-                break;
         }
     }
 }
 
 void parse_options(char *file_name, char *input, struct stat file_stats, char *file_path){
+    if (option_exists(input, 'g')){
+        int should_calculate_quality_grade = option_exists(input, 'p');
+        compile_file(file_path, should_calculate_quality_grade);
+    }
+
     int pid = fork();
     
     if (pid == -1){
@@ -221,15 +225,15 @@ void parse_options(char *file_name, char *input, struct stat file_stats, char *f
     }
 
     if (pid == 0){
-        printf("INFO(PID %d): From a child process, started parsing the given options\n", getpid());
+        printf("INFO(PID %d): From a child process, started parsing the given options and executing the desired features.\n", getpid());
         do_parse_options(file_name, input, file_stats, file_path);
         exit(0);
     }
     else{
         int state;
-        int waited_pid = waitpid(pid, &state, WUNTRACED);
+        int terminated_child_pid = waitpid(pid, &state, WUNTRACED);
         if(WIFEXITED(state)){
-            printf("INFO(PID %d): Child process %d, intended to parse the given options, has ended with exit status %d. \n", getpid(), waited_pid, WEXITSTATUS(state));
+            printf("INFO(PID %d): Child process %d, intended to parse the given options, has ended with exit status %d. \n", getpid(), terminated_child_pid, WEXITSTATUS(state));
         }
     }
 }
@@ -274,9 +278,9 @@ void check_if_sym_link_creation_needed(struct stat file_stats, char *file_path, 
     else{
         printf("INFO(PID %d): From the parent process, initializing symlink creation need checking for file '%s' (has to be max %d kb to be created). \n", getpid(), file_path, max_number_of_kb);
         int state;
-        int waited_pid = waitpid(pid, &state, WUNTRACED);
+        int terminated_child_pid = waitpid(pid, &state, WUNTRACED);
         if(WIFEXITED(state)){
-            printf("INFO(PID %d): Child process %d, intended to check symlink for file '%s', exited with status %d. \n", getpid(), waited_pid, file_path, WEXITSTATUS(state));
+            printf("INFO(PID %d): Child process %d, intended to check symlink for file '%s', exited with status %d. \n", getpid(), terminated_child_pid, file_path, WEXITSTATUS(state));
         }
     }
 }
