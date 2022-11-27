@@ -96,14 +96,16 @@ enum{
     write_end=1
 };
 
-void compile_file(char *file_path, int calculate_quality_grade){
-    // int pipe_file_descriptors[2];
-    // int process_pipe;
+int saved_stdin = 0, saved_stdout = 1;
 
-    // if((process_pipe = pipe(pipe_file_descriptors) < 0)){
-    //     perror("Error creating pipe\n");
-    //     exit(1);
-    // }
+void compile_file(char *file_path, int calculate_quality_grade){
+    int pipe_file_descriptors[2];
+    int process_pipe;
+
+    if((process_pipe = pipe(pipe_file_descriptors) < 0)){
+        perror("Error creating pipe\n");
+        exit(1);
+    }
 
     int pid = fork();
     
@@ -115,61 +117,79 @@ void compile_file(char *file_path, int calculate_quality_grade){
     }
 
     if (pid == 0){
-        // close(pipe_file_descriptors[read_end]);
-
         char file_executable[255] = ""; 
         get_file_path_without_extension(file_path, file_executable);
         strcat(file_executable, "_executable");
-        // dup2(pipe_file_descriptors[write_end], 2);
+    
         printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'. \n", getpid(), file_path, file_executable);
-
+        if(calculate_quality_grade){
+            close(pipe_file_descriptors[read_end]);
+            dup2(pipe_file_descriptors[write_end], STDERR_FILENO); // setting stderr (that's outputed by the compiling warnings/errors) to be written in the pipe
+        }
         execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
 
         exit(-1);
     }
     else{
         int state;
-        int waited_pid = waitpid(pid, &state, WUNTRACED);
+        int terminated_compiling_pid = waitpid(pid, &state, WUNTRACED);
         if(WIFEXITED(state)){
-            printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n", getpid(), waited_pid, file_path, WEXITSTATUS(state));
-            // if(calculate_quality_grade){
-            //     close(pipe_file_descriptors[write_end]);
-            //     int pid_2;
-            //     if ((pid_2 = fork() < 0)){
-            //         perror("fork filter");
-            //         exit(-1);
-            //     };
-            //     if (pid_2 == 0) {
-            //         printf("INFO(PID %d): Din copil lansam un proces de grep cu filtre error|warning\n", getpid());
-            //         execl("grep", "grep", "error|warning");
-            //         perror("execl grep");
-            //         exit(-1);
-            //     }
-            //     else{
-            //         char buffer[256];
-            //         int warnings = 0, errors = 0;
-            //         while(read(process_pipe, buffer, 256)){
-            //             if (strstr(buffer, "error")){
-            //                 errors++;
-            //             }
-            //             else if (strstr(buffer, "warning")){
-            //                 warnings++;
-            //             }
-            //         }
-            //         int nota = 0;
-            //         if (errors) {
-            //             nota = 1;
-            //         }
-            //         else if (warnings >= 10){
-            //             nota = 2;
-            //         }
-            //         else {
-            //             nota = 2 + 8 * (10 - warnings) / 10;
-            //         }
+            printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n", getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(state));
+            if(calculate_quality_grade){
+                printf("INFO(PID %d): With the output of the compiling child pid %d, making another process for calculating quality grade... \n", getpid(), terminated_compiling_pid);
+                
+                int quality_pid = fork();
+                if ((quality_pid == -1)){
+                    perror("fork filter");
+                    exit(-1);
+                };
 
-            //     }
-            // }
+                if (quality_pid == 0) {
+                    printf("INFO(PID %d): In a child process, using grep with error|warning filters.\n", getpid());
+                    saved_stdin = dup2(pipe_file_descriptors[read_end], STDIN_FILENO); // taking the written info from the pipe and duplicating it to stdin so grep can take it
+                    saved_stdout = dup2(pipe_file_descriptors[write_end], STDOUT_FILENO); // grep will normally output to stdout, we want to redirect this to our pipe
+                    execlp("grep", "grep", "-E", "error|warning", NULL);
+                    perror("execl grep");
+                    exit(-1);
+                }
+                else{
+                    int quality_process_state;
+                    int terminated_quality_pid = waitpid(quality_pid, &quality_process_state, WUNTRACED);
+                    if(WIFEXITED(quality_process_state)){
+                        dup2(saved_stdout, STDOUT_FILENO);
+                        printf("INFO(PID %d): Child process %d, intended to grep errors and warnings, exited with status %d. \n", getpid(), terminated_quality_pid, WEXITSTATUS(state));
+                        close(pipe_file_descriptors[write_end]);
+
+                        char buffer[256];
+                        int warnings = 0, errors = 0;
+
+                        while(read(pipe_file_descriptors[read_end], buffer, sizeof(buffer))){
+                            printf("Read line %s\n", buffer);
+                            if (strstr(buffer, "error")){
+                                errors++;
+                            }
+                            else if (strstr(buffer, "warning")){
+                                warnings++;
+                            }
+                        }
+                        close(pipe_file_descriptors[read_end]); // done with reading
+                        int nota = 0;
+                        if (errors) {
+                            nota = 1;
+                        }
+                        else 
+                            if (warnings >= 10){
+                                nota = 2;
+                            }
+                            else {
+                                nota = 2 + 8 * (10 - warnings) / 10;
+                            }
+                        printf("INFO(PID %d): Quality grade - %d\n", getpid(), nota);
+                    
+                    }
+                }
             }
+        }
     }
 }
 

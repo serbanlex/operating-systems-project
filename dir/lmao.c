@@ -582,5 +582,7 @@ int main(int argc, char *argv[]){
     else {
         printf("cod din parinte\n");
     }
+    int a;
+    int b;
 
 }
