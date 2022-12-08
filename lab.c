@@ -98,31 +98,30 @@ enum{
 
 int saved_stdin = 0, saved_stdout = 1;
 
-void compile_file(char *file_path, int calculate_quality_grade){
+void compile_file(char *file_path, int should_calculate_quality_grade){
     int pipe_file_descriptors[2];
-    int process_pipe;
 
-    if((process_pipe = pipe(pipe_file_descriptors) < 0)){
+    if((pipe(pipe_file_descriptors) < 0)){
         perror("Error creating pipe\n");
         exit(1);
     }
 
-    int pid = fork();
+    int compiling_pid = fork();
     
-    if (pid == -1){
+    if (compiling_pid == -1){
         char error_msg[256];
         sprintf(error_msg, "Couldn't fork current process in order to compile file %s", file_path);
         perror(error_msg);
         exit(-1);
     }
 
-    if (pid == 0){
+    if (compiling_pid == 0){
         char file_executable[255] = ""; 
         get_file_path_without_extension(file_path, file_executable);
         strcat(file_executable, "_executable");
     
         printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'. \n", getpid(), file_path, file_executable);
-        if(calculate_quality_grade){
+        if(should_calculate_quality_grade){
             close(pipe_file_descriptors[read_end]);
             dup2(pipe_file_descriptors[write_end], STDERR_FILENO); // setting stderr (that's outputed by the compiling warnings/errors) to be written in the pipe
         }
@@ -132,17 +131,17 @@ void compile_file(char *file_path, int calculate_quality_grade){
     }
     else{
         int state;
-        int terminated_compiling_pid = waitpid(pid, &state, WUNTRACED);
+        int terminated_compiling_pid = waitpid(compiling_pid, &state, WUNTRACED);
         if(WIFEXITED(state)){
             printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n", getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(state));
-            if(calculate_quality_grade){
+            if(should_calculate_quality_grade){
                 printf("INFO(PID %d): With the output of the compiling child pid %d, making another process for calculating quality grade... \n", getpid(), terminated_compiling_pid);
                 
                 int quality_pid = fork();
                 if ((quality_pid == -1)){
                     perror("fork filter");
                     exit(-1);
-                };
+                }
 
                 if (quality_pid == 0) {
                     printf("INFO(PID %d): In a child process, using grep with error|warning filters.\n", getpid());
