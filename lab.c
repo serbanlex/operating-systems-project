@@ -98,98 +98,156 @@ enum{
 
 int saved_stdin = 0, saved_stdout = 1;
 
+int get_quality_grade(int warnings, int errors);
+
 void compile_file(char *file_path, int should_calculate_quality_grade){
-    int pipe_file_descriptors[2];
-
-    if((pipe(pipe_file_descriptors) < 0)){
-        perror("Error creating pipe\n");
-        exit(1);
-    }
-
-    int compiling_pid = fork();
+    // normal compiling
+    if(!should_calculate_quality_grade){
+        int compiling_pid = fork();
     
-    if (compiling_pid == -1){
-        char error_msg[256];
-        sprintf(error_msg, "Couldn't fork current process in order to compile file %s", file_path);
-        perror(error_msg);
-        exit(-1);
-    }
-
-    if (compiling_pid == 0){
-        char file_executable[255] = ""; 
-        get_file_path_without_extension(file_path, file_executable);
-        strcat(file_executable, "_executable");
-    
-        printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'. \n", getpid(), file_path, file_executable);
-        if(should_calculate_quality_grade){
-            close(pipe_file_descriptors[read_end]);
-            dup2(pipe_file_descriptors[write_end], STDERR_FILENO); // setting stderr (that's outputed by the compiling warnings/errors) to be written in the pipe
+        if (compiling_pid == -1){
+            char error_msg[256];
+            sprintf(error_msg, "Couldn't fork current process in order to compile file %s", file_path);
+            perror(error_msg);
+            exit(-1);
         }
-        execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
 
-        exit(-1);
-    }
-    else{
-        int state;
-        int terminated_compiling_pid = waitpid(compiling_pid, &state, WUNTRACED);
-        if(WIFEXITED(state)){
-            printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n", getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(state));
-            if(should_calculate_quality_grade){
-                printf("INFO(PID %d): With the output of the compiling child pid %d, making another process for calculating quality grade... \n", getpid(), terminated_compiling_pid);
-                
-                int quality_pid = fork();
-                if ((quality_pid == -1)){
-                    perror("fork filter");
-                    exit(-1);
-                }
-
-                if (quality_pid == 0) {
-                    printf("INFO(PID %d): In a child process, using grep with error|warning filters.\n", getpid());
-                    saved_stdin = dup2(pipe_file_descriptors[read_end], STDIN_FILENO); // taking the written info from the pipe and duplicating it to stdin so grep can take it
-                    saved_stdout = dup2(pipe_file_descriptors[write_end], STDOUT_FILENO); // grep will normally output to stdout, we want to redirect this to our pipe
-                    execlp("grep", "grep", "-E", "error|warning", NULL);
-                    perror("execl grep");
-                    exit(-1);
-                }
-                else{
-                    int quality_process_state;
-                    int terminated_quality_pid = waitpid(quality_pid, &quality_process_state, WUNTRACED);
-                    if(WIFEXITED(quality_process_state)){
-                        dup2(saved_stdout, STDOUT_FILENO);
-                        printf("INFO(PID %d): Child process %d, intended to grep errors and warnings, exited with status %d. \n", getpid(), terminated_quality_pid, WEXITSTATUS(state));
-                        close(pipe_file_descriptors[write_end]);
-
-                        char buffer[256];
-                        int warnings = 0, errors = 0;
-
-                        while(read(pipe_file_descriptors[read_end], buffer, sizeof(buffer))){
-                            printf("Read line %s\n", buffer);
-                            if (strstr(buffer, "error")){
-                                errors++;
-                            }
-                            else if (strstr(buffer, "warning")){
-                                warnings++;
-                            }
-                        }
-                        close(pipe_file_descriptors[read_end]); // done with reading
-                        int nota = 0;
-                        if (errors) {
-                            nota = 1;
-                        }
-                        else 
-                            if (warnings >= 10){
-                                nota = 2;
-                            }
-                            else {
-                                nota = 2 + 8 * (10 - warnings) / 10;
-                            }
-                        printf("INFO(PID %d): Quality grade - %d\n", getpid(), nota);
-                    
-                    }
-                }
+        if (compiling_pid == 0){
+            char file_executable[255] = ""; 
+            get_file_path_without_extension(file_path, file_executable);
+            strcat(file_executable, "_executable");
+            execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
+            exit(-1);
+        }
+        // com,piling with quality grade calculation
+        else{
+            int state;
+            int terminated_compiling_pid = waitpid(compiling_pid, &state, WUNTRACED);
+            if(WIFEXITED(state)){
+                printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n",
+                       getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(state));
             }
         }
     }
+    else{
+        int pipe_gcc_to_filter[2], pipe_filter_to_parent[2];
+        
+        if(pipe(pipe_gcc_to_filter) < 0){
+            perror("pipe gcc to filter");
+        }
+        if(pipe(pipe_filter_to_parent) < 0){
+            perror("pipe filter to parent");
+        }
+
+        int gcc_compiling_pid = fork();
+    
+        if (gcc_compiling_pid == -1){
+            char error_msg[256];
+            sprintf(error_msg, "Couldn't fork current process in order to compile file %s", file_path);
+            perror(error_msg);
+            exit(-1);
+        }
+
+        if (gcc_compiling_pid == 0){
+            char file_executable[255] = ""; 
+            get_file_path_without_extension(file_path, file_executable);
+            strcat(file_executable, "_executable");
+        
+            printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'."
+                   " \n", getpid(), file_path, file_executable);
+            close(pipe_gcc_to_filter[read_end]);
+            close(pipe_filter_to_parent[read_end]);
+            close(pipe_filter_to_parent[write_end]);
+
+            if(dup2(pipe_gcc_to_filter[write_end], STDERR_FILENO) < 0) {
+                perror("dup2 pipe-gcc-filter over stderr");
+            }// setting stderr to be written in the pipe (compiling warnings/errors output on stderr)
+
+            execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
+            exit(-1);
+        }
+        else{
+            printf("INFO(PID %d): With the output of the compilation, making another process for calculating quality "
+                   "grade... \n", getpid());
+            
+            int filter_pid = fork();
+
+            if (filter_pid == -1){
+                perror("fork filter");
+                exit(-1);
+            }
+
+            if (filter_pid == 0) {
+                printf("INFO(PID %d): In a child process, using filter(grep) with error|warning filters.\n", getpid());
+                close(pipe_gcc_to_filter[write_end]);
+                close(pipe_filter_to_parent[read_end]);
+
+                dup2(pipe_gcc_to_filter[read_end], STDIN_FILENO); // grep takes input from stdin
+                dup2(STDOUT_FILENO, pipe_filter_to_parent[write_end]); // grep will normally output to stdout
+
+                execlp("grep", "grep", "-E", "error|warning", NULL);
+                perror("execl grep");
+                exit(-1);
+            }
+            else{
+                close(pipe_gcc_to_filter[write_end]);
+                close(pipe_gcc_to_filter[read_end]);
+                close(pipe_filter_to_parent[write_end]);
+
+                char buffer[256];
+                int warnings = 0, errors = 0;
+
+                while(read(pipe_filter_to_parent[read_end], buffer, sizeof(buffer))){
+                    printf("Read line %s\n", buffer);
+                    if (strstr(buffer, "error")){
+                        errors++;
+                    }
+                    else if (strstr(buffer, "warning")){
+                        warnings++;
+                    }
+                }
+                close(pipe_filter_to_parent[read_end]); // done with reading
+
+                int filter_process_state;
+                int terminated_filter_pid = waitpid(filter_pid, &filter_process_state, WUNTRACED);
+                if(terminated_filter_pid == -1){
+                    perror("filtering process");
+                }
+
+                if(WIFEXITED(filter_process_state)){
+                    printf("INFO(PID %d): Child process %d, intended to grep errors and warnings, exited "
+                           "with status %d. \n", getpid(), terminated_filter_pid, WEXITSTATUS(filter_process_state));
+                }
+
+                printf("INFO(PID %d): Quality grade - %d\n", getpid(), get_quality_grade(warnings, errors));
+
+                int compiling_process_state;
+                int terminated_compiling_pid = waitpid(gcc_compiling_pid, &compiling_process_state, WUNTRACED);
+                if(terminated_compiling_pid == -1){
+                    perror("gcc compiling process");
+                }
+                if(WIFEXITED(compiling_process_state)){
+                    printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n",
+                           getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(compiling_process_state));
+                }
+            }     
+        }
+    }
+}
+
+int get_quality_grade(int warnings, int errors) {
+    int grade = 0;
+    if (errors) {
+        grade = 1;
+    }
+    else
+        if (warnings >= 10){
+            grade = 2;
+        }
+        else {
+            grade = 2 + 8 * (10 - warnings) / 10;
+        }
+    return grade;
 }
 
 int option_exists(char *input, char desired_option){
@@ -252,7 +310,8 @@ void parse_options(char *file_name, char *input, struct stat file_stats, char *f
         int state;
         int terminated_child_pid = waitpid(pid, &state, WUNTRACED);
         if(WIFEXITED(state)){
-            printf("INFO(PID %d): Child process %d, intended to parse the given options, has ended with exit status %d. \n", getpid(), terminated_child_pid, WEXITSTATUS(state));
+            printf("INFO(PID %d): Child process %d, intended to parse the given options, has ended with "
+                   "exit status %d. \n", getpid(), terminated_child_pid, WEXITSTATUS(state));
         }
     }
 }
