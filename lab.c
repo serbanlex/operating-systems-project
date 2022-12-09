@@ -209,7 +209,7 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
                 close(pipe_filter_to_parent[read_end]);
 
                 dup2(pipe_gcc_to_filter[read_end], STDIN_FILENO); // grep takes input from stdin
-                dup2(pipe_filter_to_parent[write_end], STDOUT_FILENO); // grep will normally output to stdout
+                dup2(pipe_filter_to_parent[write_end], STDOUT_FILENO); // grep would normally output to stdout
                 close(pipe_gcc_to_filter[read_end]);
                 close(pipe_filter_to_parent[write_end]);
 
