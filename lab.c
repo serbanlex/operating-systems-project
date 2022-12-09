@@ -22,6 +22,11 @@ enum AccessIdentity{
     others
 };
 
+enum PipeEnds{
+    read_end=0,
+    write_end=1
+};
+
 int ends_with(const char *str, const char *suffix)
 {
     if (!str || !suffix)
@@ -33,17 +38,21 @@ int ends_with(const char *str, const char *suffix)
     return strncmp(str + lenstr - lensuffix, suffix, lensuffix) == 0;
 }
 
+
 void print_name(char *file_name){
     printf("> File name: %s\n\n", file_name);
 }
+
 
 void print_uid(struct stat file_stats){
     printf("UID: %d \n\n", file_stats.st_uid);
 }
 
+
 void print_dimension(struct stat file_stats){
     printf("Dimension: %lld Bytes\n", file_stats.st_size);
 }
+
 
 void print_access_for_identity(enum AccessIdentity identity, struct stat file_stats){
     int read_mask, write_mask, execute_mask;
@@ -75,15 +84,18 @@ void print_access_for_identity(enum AccessIdentity identity, struct stat file_st
     printf("%s:\nRead - %s\nWrite - %s\nExec - %s\n\n", identity_string, read, write, execute);
 }
 
+
 void print_accesses(struct stat file_stats){ 
     print_access_for_identity(user, file_stats);
     print_access_for_identity(group, file_stats);
     print_access_for_identity(others, file_stats);
 }
 
+
 void print_links_number(struct stat file_stats){ 
     printf("Number of links: %hu\n", file_stats.st_nlink);
 }
+
 
 void get_file_path_without_extension(char *file_path, char *file_path_without_extension){
     strcpy(file_path_without_extension, file_path);
@@ -91,14 +103,27 @@ void get_file_path_without_extension(char *file_path, char *file_path_without_ex
     file_path_without_extension[index_of_extension_start] = '\0';
 }
 
-enum{
-    read_end=0,
-    write_end=1
-};
+void get_executable(char *file_path, char *file_executable) {
+    get_file_path_without_extension(file_path, file_executable);
+    strcat(file_executable, "_executable");
+}
 
-int saved_stdin = 0, saved_stdout = 1;
 
-int get_quality_grade(int warnings, int errors);
+int get_quality_grade(int warnings, int errors) {
+    int grade = 0;
+    if (errors) {
+        grade = 1;
+    }
+    else
+        if (warnings >= 10){
+            grade = 2;
+        }
+        else {
+            grade = 2 + 8 * (10 - warnings) / 10;
+        }
+    return grade;
+}
+
 
 void compile_file(char *file_path, int should_calculate_quality_grade){
     // normal compiling
@@ -119,7 +144,7 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
             execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
             exit(-1);
         }
-        // com,piling with quality grade calculation
+        // compiling with quality grade calculation
         else{
             int state;
             int terminated_compiling_pid = waitpid(compiling_pid, &state, WUNTRACED);
@@ -149,15 +174,16 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
         }
 
         if (gcc_compiling_pid == 0){
-            char file_executable[255] = ""; 
-            get_file_path_without_extension(file_path, file_executable);
-            strcat(file_executable, "_executable");
-        
-            printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'."
-                   " \n", getpid(), file_path, file_executable);
             close(pipe_gcc_to_filter[read_end]);
             close(pipe_filter_to_parent[read_end]);
             close(pipe_filter_to_parent[write_end]);
+
+            char file_executable[256] = "";
+            get_executable(file_path, file_executable);
+
+            printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'."
+                   " \n", getpid(), file_path, file_executable);
+
 
             if(dup2(pipe_gcc_to_filter[write_end], STDERR_FILENO) < 0) {
                 perror("dup2 pipe-gcc-filter over stderr");
@@ -183,7 +209,9 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
                 close(pipe_filter_to_parent[read_end]);
 
                 dup2(pipe_gcc_to_filter[read_end], STDIN_FILENO); // grep takes input from stdin
-                dup2(STDOUT_FILENO, pipe_filter_to_parent[write_end]); // grep will normally output to stdout
+                dup2(pipe_filter_to_parent[write_end], STDOUT_FILENO); // grep will normally output to stdout
+                close(pipe_gcc_to_filter[read_end]);
+                close(pipe_filter_to_parent[write_end]);
 
                 execlp("grep", "grep", "-E", "error|warning", NULL);
                 perror("execl grep");
@@ -198,7 +226,6 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
                 int warnings = 0, errors = 0;
 
                 while(read(pipe_filter_to_parent[read_end], buffer, sizeof(buffer))){
-                    printf("Read line %s\n", buffer);
                     if (strstr(buffer, "error")){
                         errors++;
                     }
@@ -235,20 +262,6 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
     }
 }
 
-int get_quality_grade(int warnings, int errors) {
-    int grade = 0;
-    if (errors) {
-        grade = 1;
-    }
-    else
-        if (warnings >= 10){
-            grade = 2;
-        }
-        else {
-            grade = 2 + 8 * (10 - warnings) / 10;
-        }
-    return grade;
-}
 
 int option_exists(char *input, char desired_option){
     for(int i = 1; i <= strlen(input); i++){
@@ -258,7 +271,7 @@ int option_exists(char *input, char desired_option){
     return 0;
 }
 
-void do_parse_options(char *file_name, char *input, struct stat file_stats, char *file_path){
+void do_parse_options(char *file_name, char *input, struct stat file_stats){
     if (input[0] != '-'){
         printf("Invalid option format. Should start with '-' character.\n");
         exit(-1);
@@ -303,7 +316,7 @@ void parse_options(char *file_name, char *input, struct stat file_stats, char *f
 
     if (pid == 0){
         printf("INFO(PID %d): From a child process, started parsing the given options and executing the desired features.\n", getpid());
-        do_parse_options(file_name, input, file_stats, file_path);
+        do_parse_options(file_name, input, file_stats);
         exit(0);
     }
     else{
