@@ -272,6 +272,7 @@ bool option_is_accepted(char option){
     return false;
 }
 
+
 bool option_is_active(char *given_options, char searched_option){
     for(int i = 1; i <= strlen(given_options); i++){
         if (given_options[i] == searched_option)
