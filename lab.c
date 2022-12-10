@@ -1,12 +1,3 @@
-/*Programul primeste 2 argumente: 
-1) path catre un director
-2) optiune ('-a', '-u', '-nc').
-Cerinte:
-    1. Test de argumente.
-    2. Parcurgere nerecursiva de director
-    3. Identificati fisierele cu extensia .c
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -28,9 +19,8 @@ enum PipeEnds{
     write_end=1
 };
 
-bool is_c_file(const char *file_path, struct stat *file_stats);
+char *accepted_options = "nuadcgp";
 
-void check_argument_count(int argc);
 
 int ends_with(const char *str, const char *suffix)
 {
@@ -44,18 +34,23 @@ int ends_with(const char *str, const char *suffix)
 }
 
 
+void print_separator(){
+    printf("\n------------------------\n\n");
+}
+
+
 void print_name(char *file_name){
     printf("> File name: %s\n\n", file_name);
 }
 
 
 void print_uid(struct stat file_stats){
-    printf("UID: %d \n\n", file_stats.st_uid);
+    printf("> UID: %d \n\n", file_stats.st_uid);
 }
 
 
 void print_dimension(struct stat file_stats){
-    printf("Dimension: %lld Bytes\n", file_stats.st_size);
+    printf("> Dimension: %lld Bytes\n", file_stats.st_size);
 }
 
 
@@ -82,9 +77,9 @@ void print_access_for_identity(enum AccessIdentity identity, struct stat file_st
             execute_mask = S_IXOTH; 
     }
     int status_mode = file_stats.st_mode;
-    char *read = (status_mode & read_mask) ? "DA" : "NU";
-    char *write = (status_mode & write_mask) ? "DA" : "NU";
-    char *execute = (status_mode & execute_mask) ? "DA" : "NU";
+    char *read = (status_mode & read_mask) ? "YES" : "NO";
+    char *write = (status_mode & write_mask) ? "YES" : "NO";
+    char *execute = (status_mode & execute_mask) ? "YES" : "NO";
 
     printf("%s:\nRead - %s\nWrite - %s\nExec - %s\n\n", identity_string, read, write, execute);
 }
@@ -108,6 +103,7 @@ void get_file_path_without_extension(char *file_path, char *file_path_without_ex
     file_path_without_extension[index_of_extension_start] = '\0';
 }
 
+
 void get_executable(char *file_path, char *file_executable) {
     get_file_path_without_extension(file_path, file_executable);
     strcat(file_executable, "_executable");
@@ -130,37 +126,45 @@ int get_quality_grade(int warnings, int errors) {
 }
 
 
+void wait_for_compiling_process_to_end(const char *file_path, int compiling_pid) {
+    int compiling_process_state;
+    int terminated_compiling_pid = waitpid(compiling_pid, &compiling_process_state, WUNTRACED);
+
+    if(terminated_compiling_pid == -1){
+        perror("gcc process execution failed");
+    }
+
+    if(WIFEXITED(compiling_process_state)){
+        printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n",
+               getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(compiling_process_state));
+    }
+}
+
+
 void compile_file(char *file_path, int should_calculate_quality_grade){
-    // normal compiling
+    // the case for normal compiling
     if(!should_calculate_quality_grade){
-        int compiling_pid = fork();
+        int gcc_compiling_pid = fork();
     
-        if (compiling_pid == -1){
+        if (gcc_compiling_pid == -1){
             char error_msg[256];
             sprintf(error_msg, "Couldn't fork current process in order to compile file %s", file_path);
             perror(error_msg);
             exit(-1);
         }
 
-        if (compiling_pid == 0){
+        if (gcc_compiling_pid == 0){
             char file_executable[255] = "";
             get_executable(file_path, file_executable);
+            printf("INFO(PID %d): In a child process, started compiling the program named '%s', executable file: '%s'."
+                   " \n", getpid(), file_path, file_executable);
             execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
             exit(-1);
         }
-        // compiling with quality grade calculation
-        else{
-            int state;
-            int terminated_compiling_pid = waitpid(compiling_pid, &state, WUNTRACED);
-            if(terminated_compiling_pid == -1){
-                perror("gcc process");
-            }
-            if(WIFEXITED(state)){
-                printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n",
-                       getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(state));
-            }
-        }
+        else
+            wait_for_compiling_process_to_end(file_path, gcc_compiling_pid);
     }
+    // the case for compiling with quality grade calculation
     else{
         int pipe_gcc_to_filter[2], pipe_filter_to_parent[2];
         
@@ -188,7 +192,7 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
             char file_executable[256] = "";
             get_executable(file_path, file_executable);
 
-            printf("INFO(PID %d): From a child process, started compiling the program named '%s', executable file: '%s'."
+            printf("INFO(PID %d): In a child process, started compiling the program named '%s', executable file: '%s'."
                    " \n", getpid(), file_path, file_executable);
 
 
@@ -200,8 +204,8 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
             exit(-1);
         }
         else{
-            printf("INFO(PID %d): With the output of the compilation, making another process for calculating quality "
-                   "grade... \n", getpid());
+            printf("INFO(PID %d): From the parent process, initializing another child process for calculating "
+                   "quality of the code, continuously using the compilation output...\n", getpid());
             
             int filter_pid = fork();
 
@@ -253,37 +257,50 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
                            "with status %d. \n", getpid(), terminated_filter_pid, WEXITSTATUS(filter_process_state));
                 }
 
-                printf("INFO(PID %d): Quality grade - %d\n", getpid(), get_quality_grade(warnings, errors));
+                printf("> Quality grade: %d\n", get_quality_grade(warnings, errors));
 
-                int compiling_process_state;
-                int terminated_compiling_pid = waitpid(gcc_compiling_pid, &compiling_process_state, WUNTRACED);
-                if(terminated_compiling_pid == -1){
-                    perror("gcc compiling process");
-                }
-                if(WIFEXITED(compiling_process_state)){
-                    printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n",
-                           getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(compiling_process_state));
-                }
+                wait_for_compiling_process_to_end(file_path, gcc_compiling_pid);
             }     
         }
     }
 }
 
 
-bool option_exists(char *input, char desired_option){
-    for(int i = 1; i <= strlen(input); i++){
-        if (input[i] == desired_option)
+bool option_is_accepted(char option){
+    if(strchr(accepted_options, option))
+        return true;
+    return false;
+}
+
+bool option_is_active(char *given_options, char searched_option){
+    for(int i = 1; i <= strlen(given_options); i++){
+        if (given_options[i] == searched_option)
             return true;
     }
     return false;
 }
 
-void do_parse_options(char *file_name, char *input, struct stat file_stats){
+
+void check_options_validity(const char *input) {
     if (input[0] != '-'){
-        printf("Invalid option format. Should start with '-' character.\n");
+        printf("ERROR: Invalid option format. Second argument, the options, should start with '-' character.\n");
         exit(-1);
     }
-    
+    if(strlen(input) == 1){
+        printf("No options given. Nothing to do.\n");
+        exit(0);
+    }
+    for(int i = 1; i <= strlen(input); i++){
+        char option = input[i];
+        if(!option_is_accepted(option)){
+            printf("ERROR: Unknown option '%c'.\n", input[i]);
+            exit(-1);
+        }
+    }
+}
+
+
+void execute_options(char *file_name, char *input, struct stat file_stats){
     for(int i = 1; i <= strlen(input); i++){
         char option = input[i];
         switch(option){
@@ -306,53 +323,52 @@ void do_parse_options(char *file_name, char *input, struct stat file_stats){
     }
 }
 
-void parse_options(char *file_name, char *input, struct stat file_stats, char *file_path){
-    if (option_exists(input, 'g')){
-        int should_calculate_quality_grade = option_exists(input, 'p');
+
+void parse_options(char *file_name, char *given_options, struct stat file_stats, char *file_path){
+    if (option_is_active(given_options, 'g')){
+        int should_calculate_quality_grade = option_is_active(given_options, 'p');
         compile_file(file_path, should_calculate_quality_grade);
     }
-    int pid = fork();
 
-    if (pid == -1){
+    int option_execution_pid = fork();
+
+    if (option_execution_pid == -1){
         char error_msg[256];
         sprintf(error_msg, "Couldn't fork current process in order to parse the given options.");
         perror(error_msg);
         exit(-1);
     }
 
-    if (pid == 0){
-        printf("INFO(PID %d): From a child process, started parsing the given options and executing the desired features.\n", getpid());
-        do_parse_options(file_name, input, file_stats);
+    if (option_execution_pid == 0){
+        printf("INFO(PID %d): In a child process, started executing the remaining given options, if any.\n", getpid());
+        execute_options(file_name, given_options, file_stats);
         exit(0);
     }
     else{
         int state;
-        int terminated_child_pid = waitpid(pid, &state, WUNTRACED);
+        int terminated_option_execution_child_pid = waitpid(option_execution_pid, &state, WUNTRACED);
 
-        if(terminated_child_pid == -1){
-            perror("options parsing process");
+        if(terminated_option_execution_child_pid == -1){
+            perror("Process execution for executing given options failed");
         }
 
         if(WIFEXITED(state)){
-            printf("INFO(PID %d): Child process %d, intended to parse the given options, has ended with "
-                   "exit status %d. \n", getpid(), terminated_child_pid, WEXITSTATUS(state));
+            printf("INFO(PID %d): Child process %d, intended to execute the remaining given options, has ended with the "
+                   "exit status %d. \n", getpid(), terminated_option_execution_child_pid, WEXITSTATUS(state));
         }
     }
 }
 
-void print_separator(){
-    printf("\n------------------------\n\n");
-}
 
-void create_sym_link(char *file_path, struct stat file_stats, int enable_logging){
+void create_sym_link(char *file_path){
     char file_path_without_extension[255] = "";
     get_file_path_without_extension(file_path, file_path_without_extension);
     symlink(file_path, file_path_without_extension);
-    if(enable_logging)
-        printf("INFO(PID %d): Created symlink `%s` for file `%s` \n", getpid(), file_path_without_extension, file_path);
+    printf("INFO(PID %d): Created symlink `%s` for file `%s` \n", getpid(), file_path_without_extension, file_path);
 }
 
-void create_symlink_if_file_size_bigger_than(struct stat file_stats, char *file_path, int max_number_of_kb){
+
+void create_symlink_if_file_size_bigger_than(struct stat file_stats, char *file_path, int max_size_in_kb){
     int pid = fork();
 
     if (pid == -1){
@@ -367,18 +383,18 @@ void create_symlink_if_file_size_bigger_than(struct stat file_stats, char *file_
 
         int file_size_in_kb = file_stats.st_size / 1000; // st_size is the number in bytes => for kilobytes we divide
 
-        if (file_size_in_kb < max_number_of_kb){
-            printf("INFO(PID %d): Size of the file '%s' (%d kb) is less than %d kb. Initiating symlink creation. \n", getpid(), file_path, file_size_in_kb, max_number_of_kb);
-            create_sym_link(file_path, file_stats, 1);
+        if (file_size_in_kb < max_size_in_kb){
+            printf("INFO(PID %d): Size of the file '%s' (%d kb) is less than %d kb. Initiating symlink creation. \n", getpid(), file_path, file_size_in_kb, max_size_in_kb);
+            create_sym_link(file_path);
         }
         else{
-            printf("INFO(PID %d): Size of the file '%s' (%d kb) is bigger than %d kb. No need for making symlink. \n", getpid(), file_path, file_size_in_kb, max_number_of_kb);
+            printf("INFO(PID %d): Size of the file '%s' (%d kb) is bigger than %d kb. No need for making symlink. \n", getpid(), file_path, file_size_in_kb, max_size_in_kb);
         }
         exit(0);
     }
     
     else{
-        printf("INFO(PID %d): From the parent process, initializing symlink creation need checking for file '%s' (has to be max %d kb to be created). \n", getpid(), file_path, max_number_of_kb);
+        printf("INFO(PID %d): From the parent process, initializing symlink creation need checking for file '%s' (has to be max %d kb to be created). \n", getpid(), file_path, max_size_in_kb);
         int state;
         int terminated_child_pid = waitpid(pid, &state, WUNTRACED);
         if(WIFEXITED(state)){
@@ -387,15 +403,20 @@ void create_symlink_if_file_size_bigger_than(struct stat file_stats, char *file_
     }
 }
 
+
 DIR* open_dir_with_checks(char *dir_name){
     struct stat lstat_of_dir;
     lstat(dir_name, &lstat_of_dir);
 
     if(lstat(dir_name, &lstat_of_dir) == -1){
         char error_msg[256];
-        sprintf(error_msg, "Error checking lstat of directory `%s`", dir_name);
+        sprintf(error_msg, "Error checking lstat of file or directory `%s`", dir_name);
         perror(error_msg);
         exit(-1);
+    }
+
+    if(!S_ISDIR(lstat_of_dir.st_mode)){
+        printf("ERROR: Second argument must be a directory. Specified file '%s' is not a directory.", dir_name);
     }
 
     DIR *directory = opendir(dir_name);
@@ -407,24 +428,28 @@ DIR* open_dir_with_checks(char *dir_name){
     return directory;
 }
 
+
 void check_argument_count(int argc) {
     if (argc != 3){
-        printf("The program must have 2 arguments: 1 - dir path, 2 - option (-a, -u, -nc)\n");
+        printf("ERROR: Not enough arguments. The program must have 2 arguments: 1 - dir path, 2 - option (-a, -u, -nc)\n");
         exit(-1);
     }
 }
+
 
 bool is_c_file(const char *file_path, struct stat *file_stats) {
     return S_ISREG((*file_stats).st_mode) && ends_with(file_path, ".c");
 }
 
-// gcc -Wall -o lab lab.c
+
 int main(int argc, char *argv[]){
     check_argument_count(argc);
     char *dir_name = argv[1];
+    char *given_options = argv[2];
+    check_options_validity(given_options);
+
     DIR *directory = open_dir_with_checks(dir_name);
-    char *options = argv[2];
-    
+
     struct dirent *directory_entry;
     while ( (directory_entry = readdir(directory)) ){
         char *file_name = directory_entry->d_name;
@@ -436,7 +461,7 @@ int main(int argc, char *argv[]){
 
         if(is_c_file(file_path, &file_stats)){
             create_symlink_if_file_size_bigger_than(file_stats, file_path, 100);
-            parse_options(file_name, options, file_stats, file_path);
+            parse_options(file_name, given_options, file_stats, file_path);
             print_separator();
         }
     }
