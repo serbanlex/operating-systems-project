@@ -15,6 +15,7 @@ Cerinte:
 #include <dirent.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdbool.h>
 
 enum AccessIdentity{
     user,
@@ -26,6 +27,10 @@ enum PipeEnds{
     read_end=0,
     write_end=1
 };
+
+bool is_c_file(const char *file_path, struct stat *file_stats);
+
+void check_argument_count(int argc);
 
 int ends_with(const char *str, const char *suffix)
 {
@@ -138,9 +143,8 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
         }
 
         if (compiling_pid == 0){
-            char file_executable[255] = ""; 
-            get_file_path_without_extension(file_path, file_executable);
-            strcat(file_executable, "_executable");
+            char file_executable[255] = "";
+            get_executable(file_path, file_executable);
             execlp("gcc", "gcc", "-Wall", "-o", file_executable, file_path, NULL);
             exit(-1);
         }
@@ -148,6 +152,9 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
         else{
             int state;
             int terminated_compiling_pid = waitpid(compiling_pid, &state, WUNTRACED);
+            if(terminated_compiling_pid == -1){
+                perror("gcc process");
+            }
             if(WIFEXITED(state)){
                 printf("INFO(PID %d): Child process %d, intended to compile file %s, exited with status %d. \n",
                        getpid(), terminated_compiling_pid, file_path, WEXITSTATUS(state));
@@ -263,12 +270,12 @@ void compile_file(char *file_path, int should_calculate_quality_grade){
 }
 
 
-int option_exists(char *input, char desired_option){
+bool option_exists(char *input, char desired_option){
     for(int i = 1; i <= strlen(input); i++){
         if (input[i] == desired_option)
-            return 1;
+            return true;
     }
-    return 0;
+    return false;
 }
 
 void do_parse_options(char *file_name, char *input, struct stat file_stats){
@@ -304,9 +311,8 @@ void parse_options(char *file_name, char *input, struct stat file_stats, char *f
         int should_calculate_quality_grade = option_exists(input, 'p');
         compile_file(file_path, should_calculate_quality_grade);
     }
-
     int pid = fork();
-    
+
     if (pid == -1){
         char error_msg[256];
         sprintf(error_msg, "Couldn't fork current process in order to parse the given options.");
@@ -322,6 +328,11 @@ void parse_options(char *file_name, char *input, struct stat file_stats, char *f
     else{
         int state;
         int terminated_child_pid = waitpid(pid, &state, WUNTRACED);
+
+        if(terminated_child_pid == -1){
+            perror("options parsing process");
+        }
+
         if(WIFEXITED(state)){
             printf("INFO(PID %d): Child process %d, intended to parse the given options, has ended with "
                    "exit status %d. \n", getpid(), terminated_child_pid, WEXITSTATUS(state));
@@ -341,7 +352,7 @@ void create_sym_link(char *file_path, struct stat file_stats, int enable_logging
         printf("INFO(PID %d): Created symlink `%s` for file `%s` \n", getpid(), file_path_without_extension, file_path);
 }
 
-void check_if_sym_link_creation_needed(struct stat file_stats, char *file_path, int max_number_of_kb){
+void create_symlink_if_file_size_bigger_than(struct stat file_stats, char *file_path, int max_number_of_kb){
     int pid = fork();
 
     if (pid == -1){
@@ -396,16 +407,22 @@ DIR* open_dir_with_checks(char *dir_name){
     return directory;
 }
 
-// gcc -Wall -o lab lab.c
-int main(int argc, char *argv[]){
+void check_argument_count(int argc) {
     if (argc != 3){
         printf("The program must have 2 arguments: 1 - dir path, 2 - option (-a, -u, -nc)\n");
         exit(-1);
     }
+}
 
+bool is_c_file(const char *file_path, struct stat *file_stats) {
+    return S_ISREG((*file_stats).st_mode) && ends_with(file_path, ".c");
+}
+
+// gcc -Wall -o lab lab.c
+int main(int argc, char *argv[]){
+    check_argument_count(argc);
     char *dir_name = argv[1];
     DIR *directory = open_dir_with_checks(dir_name);
-
     char *options = argv[2];
     
     struct dirent *directory_entry;
@@ -417,8 +434,8 @@ int main(int argc, char *argv[]){
         struct stat file_stats;
         lstat(file_path, &file_stats);
 
-        if(S_ISREG(file_stats.st_mode) && ends_with(file_path, ".c")){
-            check_if_sym_link_creation_needed(file_stats, file_path, 100);
+        if(is_c_file(file_path, &file_stats)){
+            create_symlink_if_file_size_bigger_than(file_stats, file_path, 100);
             parse_options(file_name, options, file_stats, file_path);
             print_separator();
         }
